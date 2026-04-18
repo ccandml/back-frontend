@@ -14,7 +14,7 @@ const UNAUTHORIZED_CODE = 401
 // 请求超时时间（毫秒）。
 const DEFAULT_TIMEOUT = 555000
 // 统一 API 前缀。
-const BASE_URL = 'https://cyx-0sar.onrender.com/cyx/v1'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/cyx/v1'
 // 并发请求同时返回 401 时，避免重复清理登录态与重复跳转。
 let isHandlingUnauthorized = false
 

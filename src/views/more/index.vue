@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { codeToText, regionData } from 'element-china-area-data'
 import { useRouter } from 'vue-router'
 
+import { getNotice, updateNotice } from '@/service/notice'
 import { updateProfile } from '@/service/user'
 import { useMemberStore } from '@/stores'
 
@@ -32,6 +33,9 @@ const profileSubmitting = ref(false)
 const profileDialogVisible = ref(false)
 const previewVisible = ref(false)
 const locationCodes = ref<string[]>([])
+const noticeContent = ref('')
+const noticeSubmitting = ref(false)
+const noticeLoading = ref(false)
 
 const updateForm = reactive<UpdateProfileForm>({
   username: '',
@@ -137,6 +141,43 @@ const handleLogout = async () => {
   ElMessage.success('已退出登录')
   await router.replace('/login')
 }
+
+const handleUpdateNotice = async () => {
+  const content = noticeContent.value.trim()
+  if (!content) {
+    ElMessage.warning('请输入系统公告内容')
+    return
+  }
+
+  noticeSubmitting.value = true
+  try {
+    await updateNotice(content)
+    ElMessage.success('系统公告更新成功')
+    // 保存成功后回写去除首尾空白的内容，保持界面与提交数据一致。
+    noticeContent.value = content
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '系统公告更新失败')
+  } finally {
+    noticeSubmitting.value = false
+  }
+}
+
+const loadNotice = async () => {
+  noticeLoading.value = true
+  try {
+    const result = await getNotice()
+    // 接口返回为空时回退空字符串，避免输入框出现 undefined。
+    noticeContent.value = result?.content?.trim() || ''
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '系统公告加载失败')
+  } finally {
+    noticeLoading.value = false
+  }
+}
+
+onMounted(() => {
+  void loadNotice()
+})
 </script>
 
 <template>
@@ -168,8 +209,34 @@ const handleLogout = async () => {
       </div>
     </div>
 
-    <div class="tips-block">
-      <p>此页面后期可以完善系统公告、安全中心...</p>
+    <div class="notice-card">
+      <div class="notice-head">
+        <h3 class="notice-title">系统公告</h3>
+        <p class="notice-subtitle">支持在后台统一维护给所有用户展示的公告内容</p>
+      </div>
+
+      <el-input
+        v-model="noticeContent"
+        class="notice-input"
+        type="textarea"
+        :rows="6"
+        maxlength="500"
+        show-word-limit
+        resize="none"
+        placeholder="请输入系统公告内容"
+        :disabled="noticeLoading"
+      />
+
+      <div class="notice-actions">
+        <el-button
+          type="primary"
+          :loading="noticeSubmitting"
+          :disabled="noticeLoading"
+          @click="handleUpdateNotice"
+        >
+          保存公告
+        </el-button>
+      </div>
     </div>
 
     <el-dialog
@@ -247,11 +314,15 @@ const handleLogout = async () => {
 </template>
 
 <style scoped lang="scss">
+* {
+  box-sizing: border-box;
+}
 .more-page {
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
-  grid-template-rows: auto 1fr;
 }
 
 .header-card {
@@ -335,13 +406,63 @@ const handleLogout = async () => {
   opacity: 0.95;
 }
 
-.tips-block {
-  border: 1px dashed #d7e3f3;
-  border-radius: 12px;
-  background: #fbfdff;
-  padding: 14px 16px;
-  color: #64748b;
+.notice-card {
+  min-height: 0;
+  height: 100%;
+  border: 1px solid #e7ecf3;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.notice-head {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.notice-title {
+  margin: 0;
+  font-size: 17px;
+  color: #0f172a;
+}
+
+.notice-subtitle {
+  margin: 0;
+  color: #6b7280;
   font-size: 13px;
+}
+
+.notice-input {
+  flex: 1;
+  min-height: 0;
+
+  :deep(.el-textarea) {
+    height: 100%;
+  }
+
+  :deep(.el-textarea__inner) {
+    height: 100%;
+    min-height: 0;
+    resize: none;
+    overflow: hidden;
+    border: none !important; /* 清除实线边框 */
+    outline: none !important; /* 清除聚焦外边框 */
+    box-shadow: none !important; /* 清除阴影 */
+    background: transparent; /* 可选：透明背景 */
+    // background: #fcfdff;
+  }
+}
+
+.notice-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .logout-btn {
@@ -373,8 +494,20 @@ const handleLogout = async () => {
     padding: 18px;
   }
 
+  .notice-card {
+    padding: 14px;
+  }
+
   .name {
     font-size: 20px;
+  }
+
+  .notice-actions {
+    justify-content: stretch;
+  }
+
+  .notice-actions .el-button {
+    width: 100%;
   }
 
   .grid-two {

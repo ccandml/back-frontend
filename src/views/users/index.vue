@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { codeToText, regionData } from 'element-china-area-data'
 
 import { createUser, deleteUser, getUserDetail, getUsersList } from '@/service/user'
+import { useMemberStore } from '@/stores'
 import UserDetailDialog from '@/views/users/components/UserDetailDialog.vue'
 import type { AdminUserDetailResult, AdminUserListItem } from '@/views/users/types/result'
 
@@ -30,6 +31,7 @@ type CreateUserForm = {
 
 const loading = ref(false)
 const detailLoading = ref(false)
+const memberStore = useMemberStore()
 const users = ref<UserRow[]>([])
 const pageSize = 8
 const currentPage = ref(1)
@@ -68,6 +70,13 @@ const createRules = {
 }
 
 const hasData = computed(() => users.value.length > 0)
+// 注销用户仅允许超级管理员执行，角色来自 Pinia 持久化会员信息。
+const canDeactivateUser = computed(() => memberStore.role === '超级管理员')
+// 非超级管理员可新增普通用户，但不可新增管理员角色。
+const canCreateAdminUser = computed(() => memberStore.role === '超级管理员')
+const disableCreateSubmit = computed(
+  () => !canCreateAdminUser.value && createForm.value.roleId === 2,
+)
 
 const activeUser = computed(() => {
   if (activeUserId.value === null) {
@@ -204,6 +213,11 @@ const handleViewDetail = (row: UserRow) => {
 }
 
 const handleDeactivate = async (row: UserRow) => {
+  if (!canDeactivateUser.value) {
+    ElMessage.warning('仅超级管理员可注销用户')
+    return
+  }
+
   if (deletingUserIds.value.includes(row.id)) {
     return
   }
@@ -269,6 +283,11 @@ const handleLocationChange = (codes: string[]) => {
 }
 
 const handleCreateUser = async () => {
+  if (!canCreateAdminUser.value && createForm.value.roleId === 2) {
+    ElMessage.warning('仅超级管理员可新增管理员')
+    return
+  }
+
   if (!createFormRef.value) {
     return
   }
@@ -402,7 +421,7 @@ onMounted(() => {
                 type="warning"
                 link
                 :loading="deletingUserIds.includes(row.id)"
-                :disabled="deletingUserIds.includes(row.id)"
+                :disabled="!canDeactivateUser || deletingUserIds.includes(row.id)"
                 @click="handleDeactivate(row)"
               >
                 注销用户
@@ -509,7 +528,11 @@ onMounted(() => {
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="closeCreateDialog">取消</el-button>
-          <el-button type="primary" :loading="creating" @click="handleCreateUser"
+          <el-button
+            type="primary"
+            :loading="creating"
+            :disabled="disableCreateSubmit"
+            @click="handleCreateUser"
             >确认新增</el-button
           >
         </div>

@@ -21,6 +21,8 @@ const memberStore = useMemberStore()
 const router = useRouter()
 
 const roleName = computed(() => memberStore.role || '未设置角色')
+// 公告属于全局配置，仅允许超级管理员修改。
+const canUpdateNotice = computed(() => memberStore.role === '超级管理员')
 const userName = computed(() => memberStore.profile?.username || '-')
 const avatarUrl = computed(() => memberStore.profile?.avatar || '')
 const hasAvatar = computed(() => Boolean(avatarUrl.value))
@@ -143,6 +145,11 @@ const handleLogout = async () => {
 }
 
 const handleUpdateNotice = async () => {
+  if (!canUpdateNotice.value) {
+    ElMessage.warning('仅超级管理员可修改系统公告')
+    return
+  }
+
   const content = noticeContent.value.trim()
   if (!content) {
     ElMessage.warning('请输入系统公告内容')
@@ -231,7 +238,7 @@ onMounted(() => {
         <el-button
           type="primary"
           :loading="noticeSubmitting"
-          :disabled="noticeLoading"
+          :disabled="noticeLoading || !canUpdateNotice"
           @click="handleUpdateNotice"
         >
           保存公告

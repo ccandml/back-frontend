@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import type { Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { getOrderDetail, getOrderList, updateOrderState } from '@/service/order'
@@ -16,21 +17,8 @@ type OrderTableRow = AdminOrderListItem & {
   statusLabel: OrderStateLabel
 }
 
-const loading = ref(false)
-const detailLoading = ref(false)
-const updateStateLoading = ref(false)
-const orders = ref<OrderTableRow[]>([])
-const detailVisible = ref(false)
-const currentPage = ref(1)
+// 表格固定分页大小（保持原有行为）。
 const pageSize = 8
-const total = ref(0)
-const keyword = ref('')
-const selectedStatus = ref<'all' | OrderStateCode>('all')
-const sortField = ref<SortField | ''>('')
-const sortOrder = ref<SortOrder | ''>('')
-const activeOrderId = ref('')
-const activeOrderRow = ref<OrderTableRow | null>(null)
-const orderDetailMap = ref<Record<string, AdminOrderDetailResult>>({})
 
 const ORDER_STATE_MAP: Record<OrderStateCode, OrderStateLabel> = {
   1: '待付款',
@@ -51,162 +39,284 @@ const statusOptions: Array<{ label: string; value: 'all' | OrderStateCode }> = [
   { label: '已取消', value: 6 },
 ]
 
-const hasData = computed(() => orders.value.length > 0)
-
-const activeOrder = computed(() => activeOrderRow.value)
-
-const activeDetail = computed(() => {
-  if (!activeOrderId.value) {
-    return null
-  }
-  return orderDetailMap.value[activeOrderId.value] ?? null
-})
-
 const formatCurrency = (value: number) => `¥${value.toFixed(2)}`
 
-const getSortLabel = (field: SortField) => {
-  if (sortField.value !== field || !sortOrder.value) {
-    return '未排序'
-  }
-  return sortOrder.value === 'ASC' ? '升序' : '降序'
-}
+// 筛选与排序逻辑：关键词、状态、排序、页码。
+const useOrderFilters = () => {
+  const keyword = ref('') // 关键词：订单 ID 或用户名
+  const selectedStatus = ref<'all' | OrderStateCode>('all') // 订单状态筛选
+  const sortField = ref<SortField | ''>('') // 排序字段
+  const sortOrder = ref<SortOrder | ''>('') // 排序方向
+  const currentPage = ref(1) // 当前页
 
-// 只允许一个排序字段生效，行为与商品管理保持一致。
-const toggleSort = (field: SortField) => {
-  if (sortField.value !== field) {
-    sortField.value = field
+  const getSortLabel = (field: SortField) => {
+    if (sortField.value !== field || !sortOrder.value) {
+      return '未排序'
+    }
+    return sortOrder.value === 'ASC' ? '升序' : '降序'
+  }
+
+  // 只允许一个排序字段生效，行为与商品管理保持一致。
+  const toggleSort = (field: SortField) => {
+    if (sortField.value !== field) {
+      sortField.value = field
+      sortOrder.value = 'ASC'
+      return
+    }
+
+    if (sortOrder.value === 'ASC') {
+      sortOrder.value = 'DESC'
+      return
+    }
+
+    if (sortOrder.value === 'DESC') {
+      sortField.value = ''
+      sortOrder.value = ''
+      return
+    }
+
     sortOrder.value = 'ASC'
-    return
   }
 
-  if (sortOrder.value === 'ASC') {
-    sortOrder.value = 'DESC'
-    return
-  }
-
-  if (sortOrder.value === 'DESC') {
+  const resetFilters = () => {
+    keyword.value = ''
+    selectedStatus.value = 'all'
     sortField.value = ''
     sortOrder.value = ''
-    return
+    currentPage.value = 1
   }
 
-  sortOrder.value = 'ASC'
-}
-
-const fetchOrders = async () => {
-  loading.value = true
-  try {
-    const response = await getOrderList({
-      page: currentPage.value,
-      pageSize,
-      keyword: keyword.value.trim() || undefined,
-      orderState: selectedStatus.value === 'all' ? undefined : selectedStatus.value,
-      sortBy: sortField.value || undefined,
-      sortOrder: sortOrder.value || undefined,
-    })
-
-    orders.value = response.items.map((item) => ({
-      ...item,
-      statusLabel: ORDER_STATE_MAP[(item.orderState as OrderStateCode) ?? 1] ?? '待付款',
-    }))
-    total.value = response.counts
-  } catch (error) {
-    console.error('获取订单列表失败：', error)
-    ElMessage.error(error instanceof Error ? error.message : '获取订单列表失败')
-    orders.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
+  return {
+    keyword,
+    selectedStatus,
+    sortField,
+    sortOrder,
+    currentPage,
+    getSortLabel,
+    toggleSort,
+    resetFilters,
   }
 }
 
-const handleSearch = () => {
-  currentPage.value = 1
-  void fetchOrders()
-}
+// 订单列表逻辑：列表请求、筛选动作、分页。
+const useOrderTable = (
+  filters: {
+    keyword: Ref<string>
+    selectedStatus: Ref<'all' | OrderStateCode>
+    sortField: Ref<SortField | ''>
+    sortOrder: Ref<SortOrder | ''>
+    currentPage: Ref<number>
+    resetFilters: () => void
+  },
+  size: number,
+) => {
+  const loading = ref(false)
+  const orders = ref<OrderTableRow[]>([])
+  const total = ref(0)
 
-const handleReset = () => {
-  keyword.value = ''
-  selectedStatus.value = 'all'
-  sortField.value = ''
-  sortOrder.value = ''
-  currentPage.value = 1
-  void fetchOrders()
-}
+  const hasData = computed(() => orders.value.length > 0)
 
-const handlePageChange = (page: number) => {
-  currentPage.value = page
-  void fetchOrders()
-}
+  const fetchOrders = async () => {
+    loading.value = true
+    try {
+      const response = await getOrderList({
+        page: filters.currentPage.value,
+        pageSize: size,
+        keyword: filters.keyword.value.trim() || undefined,
+        orderState:
+          filters.selectedStatus.value === 'all' ? undefined : filters.selectedStatus.value,
+        sortBy: filters.sortField.value || undefined,
+        sortOrder: filters.sortOrder.value || undefined,
+      })
 
-// 详情按订单懒加载，并缓存结果避免重复请求。
-const handleViewDetail = async (row: OrderTableRow) => {
-  activeOrderId.value = row.id
-  activeOrderRow.value = row
-  detailVisible.value = true
-
-  if (orderDetailMap.value[row.id]) {
-    return
-  }
-
-  detailLoading.value = true
-  try {
-    const detail = await getOrderDetail(row.id)
-    orderDetailMap.value[row.id] = detail
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '获取订单详情失败')
-    detailVisible.value = false
-  } finally {
-    detailLoading.value = false
-  }
-}
-
-const handleUpdateOrderState = async (orderState: OrderStateCode) => {
-  if (!activeOrderId.value || !activeOrderRow.value) {
-    return
-  }
-
-  if (activeOrderRow.value.orderState === orderState) {
-    ElMessage.info('订单状态未变化')
-    return
-  }
-
-  updateStateLoading.value = true
-  try {
-    await updateOrderState(activeOrderId.value, { orderState })
-
-    const nextStatusLabel = ORDER_STATE_MAP[orderState]
-
-    // 同步更新当前弹框行，保证修改后状态标签即时反馈。
-    activeOrderRow.value = {
-      ...activeOrderRow.value,
-      orderState,
-      statusLabel: nextStatusLabel,
+      orders.value = response.items.map((item) => ({
+        ...item,
+        statusLabel: ORDER_STATE_MAP[(item.orderState as OrderStateCode) ?? 1] ?? '待付款',
+      }))
+      total.value = response.counts
+    } catch (error) {
+      console.error('获取订单列表失败：', error)
+      ElMessage.error(error instanceof Error ? error.message : '获取订单列表失败')
+      orders.value = []
+      total.value = 0
+    } finally {
+      loading.value = false
     }
+  }
 
-    const target = orders.value.find((item) => item.id === activeOrderId.value)
-    if (target) {
-      target.orderState = orderState
-      target.statusLabel = nextStatusLabel
-    }
-
-    const activeDetailData = orderDetailMap.value[activeOrderId.value]
-    if (activeDetailData) {
-      activeDetailData.orderState = orderState
-    }
-
-    ElMessage.success('订单状态更新成功')
-
-    // 触发一次列表刷新，确保筛选条件和服务端状态始终一致。
+  const handleSearch = () => {
+    filters.currentPage.value = 1
     void fetchOrders()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '订单状态更新失败')
-  } finally {
-    updateStateLoading.value = false
+  }
+
+  const handleReset = () => {
+    filters.resetFilters()
+    void fetchOrders()
+  }
+
+  const handlePageChange = (page: number) => {
+    filters.currentPage.value = page
+    void fetchOrders()
+  }
+
+  return {
+    loading,
+    orders,
+    total,
+    hasData,
+    fetchOrders,
+    handleSearch,
+    handleReset,
+    handlePageChange,
   }
 }
+
+// 订单详情弹窗逻辑：懒加载详情、缓存、更新状态并回写列表。
+const useOrderDetail = (params: {
+  orders: Ref<OrderTableRow[]>
+  fetchOrders: () => Promise<void>
+}) => {
+  const detailLoading = ref(false)
+  const updateStateLoading = ref(false)
+  const detailVisible = ref(false)
+  const activeOrderId = ref('')
+  const activeOrderRow = ref<OrderTableRow | null>(null)
+  const orderDetailMap = ref<Record<string, AdminOrderDetailResult>>({})
+
+  const activeOrder = computed(() => activeOrderRow.value)
+
+  const activeDetail = computed(() => {
+    if (!activeOrderId.value) {
+      return null
+    }
+    return orderDetailMap.value[activeOrderId.value] ?? null
+  })
+
+  // 详情按订单懒加载，并缓存结果避免重复请求。
+  const handleViewDetail = async (row: OrderTableRow) => {
+    activeOrderId.value = row.id
+    activeOrderRow.value = row
+    detailVisible.value = true
+
+    if (orderDetailMap.value[row.id]) {
+      return
+    }
+
+    detailLoading.value = true
+    try {
+      const detail = await getOrderDetail(row.id)
+      orderDetailMap.value[row.id] = detail
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '获取订单详情失败')
+      detailVisible.value = false
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
+  const handleUpdateOrderState = async (orderState: OrderStateCode) => {
+    if (!activeOrderId.value || !activeOrderRow.value) {
+      return
+    }
+
+    if (activeOrderRow.value.orderState === orderState) {
+      ElMessage.info('订单状态未变化')
+      return
+    }
+
+    updateStateLoading.value = true
+    try {
+      await updateOrderState(activeOrderId.value, { orderState })
+
+      const nextStatusLabel = ORDER_STATE_MAP[orderState]
+
+      // 同步更新当前弹框行，保证修改后状态标签即时反馈。
+      activeOrderRow.value = {
+        ...activeOrderRow.value,
+        orderState,
+        statusLabel: nextStatusLabel,
+      }
+
+      const target = params.orders.value.find((item) => item.id === activeOrderId.value)
+      if (target) {
+        target.orderState = orderState
+        target.statusLabel = nextStatusLabel
+      }
+
+      const activeDetailData = orderDetailMap.value[activeOrderId.value]
+      if (activeDetailData) {
+        activeDetailData.orderState = orderState
+      }
+
+      ElMessage.success('订单状态更新成功')
+
+      // 触发一次列表刷新，确保筛选条件和服务端状态始终一致。
+      void params.fetchOrders()
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '订单状态更新失败')
+    } finally {
+      updateStateLoading.value = false
+    }
+  }
+
+  return {
+    detailLoading,
+    updateStateLoading,
+    detailVisible,
+    activeOrder,
+    activeDetail,
+    handleViewDetail,
+    handleUpdateOrderState,
+  }
+}
+
+const {
+  keyword,
+  selectedStatus,
+  sortField,
+  sortOrder,
+  currentPage,
+  getSortLabel,
+  toggleSort,
+  resetFilters,
+} = useOrderFilters()
+
+const {
+  loading,
+  orders,
+  total,
+  hasData,
+  fetchOrders,
+  handleSearch,
+  handleReset,
+  handlePageChange,
+} = useOrderTable(
+  {
+    keyword,
+    selectedStatus,
+    sortField,
+    sortOrder,
+    currentPage,
+    resetFilters,
+  },
+  pageSize,
+)
+
+const {
+  detailVisible,
+  detailLoading,
+  updateStateLoading,
+  activeDetail,
+  activeOrder,
+  handleViewDetail,
+  handleUpdateOrderState,
+} = useOrderDetail({
+  orders,
+  fetchOrders,
+})
 
 onMounted(() => {
+  // 页面初始化加载订单列表。
   void fetchOrders()
 })
 </script>

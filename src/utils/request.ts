@@ -105,7 +105,7 @@ request.interceptors.response.use(
 
       const businessCode = payload.code !== undefined ? Number(payload.code) : response.status
 
-      // 业务 400：提示权限不足，不清理登录态。
+      // 业务 403：提示权限不足，不清理登录态。
       if (businessCode === FORBIDDEN_CODE) {
         void ElMessageBox.alert(payload.message || '暂无权限访问该资源', '权限提示', {
           type: 'warning',

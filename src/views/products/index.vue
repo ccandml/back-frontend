@@ -1,5 +1,6 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import type { Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { getCategories } from '@/service/category'
@@ -28,32 +29,19 @@ type EditableSkuRow = {
   available: boolean
 }
 
+type EditableSkuSnapshot = Pick<EditableSkuRow, 'available' | 'inventory' | 'oldPrice' | 'price'>
+type EditableSkuSnapshotMap = Record<string, EditableSkuSnapshot>
+
 type CategoryCascaderOption = {
   id: string
   name: string
   children: CategoryCascaderOption[]
 }
 
-const loading = ref(false)
-const products = ref<ProductRow[]>([])
+// 表格固定分页大小（保持原有行为）
 const pageSize = 5
-const currentPage = ref(1)
-const total = ref(0)
-const categoryOptions = ref<CategoryCascaderOption[]>([])
-const keyword = ref('')
-const status = ref<'all' | ProductStatus>('all')
-const categoryId = ref('')
-const sortField = ref<SortField | ''>('')
-const sortOrder = ref<SortOrder | ''>('')
-const editVisible = ref(false)
-const editLoading = ref(false)
-const saveLoading = ref(false)
-const activeProductId = ref('')
-const editableSkus = ref<EditableSkuRow[]>([])
-const originalEditableSkus = ref<
-  Record<string, Pick<EditableSkuRow, 'available' | 'inventory' | 'oldPrice' | 'price'>>
->({})
 
+// 将后端商品结构映射为页面展示结构。
 const buildProductRow = (item: GoodsItems): ProductRow => {
   return {
     ...item,
@@ -61,31 +49,7 @@ const buildProductRow = (item: GoodsItems): ProductRow => {
   }
 }
 
-const fetchProducts = async () => {
-  loading.value = true
-  try {
-    const response = await getProducts({
-      page: currentPage.value,
-      pageSize,
-      keyword: keyword.value.trim() || undefined,
-      // 仅传递二级分类 id；未选择分类时不传该参数。
-      categoryId: categoryId.value || undefined,
-      sortBy: sortField.value || undefined,
-      sortOrder: sortOrder.value || undefined,
-      // 后端约定：available 仅接收 1/0，不筛选时不传。
-      available: status.value === 'all' ? undefined : status.value === '上架' ? 1 : 0,
-    })
-    products.value = response.items.map(buildProductRow)
-    total.value = response.counts
-  } catch (error) {
-    console.error('获取商品列表失败：', error)
-    products.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
-}
-
+// 规范化分类数据，适配级联组件结构。
 const normalizeCategoryOptions = (categories: ClassifyResult[]): CategoryCascaderOption[] => {
   return categories.map((category) => ({
     id: category.id,
@@ -98,30 +62,7 @@ const normalizeCategoryOptions = (categories: ClassifyResult[]): CategoryCascade
   }))
 }
 
-const fetchCategories = async () => {
-  try {
-    const data = await getCategories()
-    categoryOptions.value = normalizeCategoryOptions(data)
-  } catch (error) {
-    console.error('获取分类列表失败：', error)
-    categoryOptions.value = []
-  }
-}
-
-const categoryCascaderProps = {
-  value: 'id',
-  label: 'name',
-  children: 'children',
-  emitPath: false,
-}
-
-const hasData = computed(() => products.value.length > 0)
-
-const formatPrice = (value: string) => {
-  const amount = Number(value)
-  return Number.isFinite(amount) ? `¥${amount.toFixed(2)}` : value
-}
-
+// 将 SKU 详情映射为弹窗中的可编辑行。
 const mapEditableSku = (sku: SkuItem): EditableSkuRow => {
   return {
     id: sku.id,
@@ -135,156 +76,332 @@ const mapEditableSku = (sku: SkuItem): EditableSkuRow => {
   }
 }
 
-const handleEdit = async (id: string) => {
-  activeProductId.value = id
-  editableSkus.value = []
-  originalEditableSkus.value = {}
-  editVisible.value = true
-  editLoading.value = true
+// 仅保存可编辑字段快照，用于保存前做 diff。
+const createSkuSnapshot = (skus: EditableSkuRow[]) => {
+  const snapshotMap: EditableSkuSnapshotMap = {}
 
-  try {
-    const skus = await getProductDetail(id)
-    const mappedSkus = skus.map(mapEditableSku)
-    editableSkus.value = mappedSkus
-    originalEditableSkus.value = Object.fromEntries(
-      mappedSkus.map((sku) => [
-        sku.id,
-        {
-          available: sku.available,
-          inventory: sku.inventory,
-          oldPrice: sku.oldPrice,
-          price: sku.price,
-        },
-      ]),
-    )
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '获取商品详情失败')
-  } finally {
-    editLoading.value = false
+  for (const sku of skus) {
+    snapshotMap[sku.id] = {
+      available: sku.available,
+      inventory: sku.inventory,
+      oldPrice: sku.oldPrice,
+      price: sku.price,
+    }
   }
+
+  return snapshotMap
 }
 
-const isSkuChanged = (sku: EditableSkuRow) => {
-  const original = originalEditableSkus.value[sku.id]
-  if (!original) {
-    return true
-  }
-
-  return (
-    original.available !== sku.available ||
-    original.inventory !== sku.inventory ||
-    original.oldPrice !== sku.oldPrice ||
-    original.price !== sku.price
-  )
+const formatPrice = (value: string) => {
+  const amount = Number(value)
+  return Number.isFinite(amount) ? `¥${amount.toFixed(2)}` : value
 }
 
-// 保存时逐条调用 SKU 更新接口，确保后端与前端展示保持一致。
-const handleSaveSkus = async () => {
-  if (!activeProductId.value || editableSkus.value.length === 0) {
-    return
+// 查询筛选逻辑：关键词、状态、分类、排序、页码。
+const useProductFilters = () => {
+  const keyword = ref('') // 商品关键词：支持 ID / 名称
+  const status = ref<'all' | ProductStatus>('all') // 上下架状态，all 表示不筛选
+  const categoryId = ref('') // 分类筛选值（仅二级分类 id）
+  const sortField = ref<SortField | ''>('') // 当前排序字段
+  const sortOrder = ref<SortOrder | ''>('') // 当前排序方向
+  const currentPage = ref(1) // 当前页
+
+  const getSortLabel = (field: SortField) => {
+    if (sortField.value !== field || !sortOrder.value) {
+      return '未排序'
+    }
+    return sortOrder.value === 'ASC' ? '升序' : '降序'
   }
 
-  const changedSkus = editableSkus.value.filter(isSkuChanged)
-  if (changedSkus.length === 0) {
-    ElMessage.info('未检测到 SKU 变更')
-    editVisible.value = false
-    return
-  }
-
-  saveLoading.value = true
-  try {
-    await Promise.all(
-      changedSkus.map((sku) =>
-        updateSkuProduct({
-          id: sku.id,
-          available: sku.available,
-          inventory: sku.inventory,
-          oldPrice: sku.oldPrice,
-          price: sku.price,
-        }),
-      ),
-    )
-
-    // 同步更新列表中的聚合信息，确保弹层关闭后页面可见最新编辑结果。
-    const target = products.value.find((item) => item.id === activeProductId.value)
-    if (target) {
-      target.stock = editableSkus.value.reduce((sum, sku) => sum + sku.inventory, 0)
-      target.price = Math.min(...editableSkus.value.map((sku) => sku.price)).toFixed(2)
-      target.status = editableSkus.value.some((sku) => sku.available) ? '上架' : '下架'
-      target.available = target.status === '上架'
+  // 只允许一个排序字段生效：点击同一字段在升序/降序/不排序间切换。
+  const toggleSort = (field: SortField) => {
+    if (sortField.value !== field) {
+      sortField.value = field
+      sortOrder.value = 'ASC'
+      return
     }
 
-    ElMessage.success('SKU 修改成功')
-    originalEditableSkus.value = Object.fromEntries(
-      editableSkus.value.map((sku) => [
-        sku.id,
-        {
-          available: sku.available,
-          inventory: sku.inventory,
-          oldPrice: sku.oldPrice,
-          price: sku.price,
-        },
-      ]),
-    )
-    editVisible.value = false
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存 SKU 失败')
-  } finally {
-    saveLoading.value = false
-  }
-}
+    if (sortOrder.value === 'ASC') {
+      sortOrder.value = 'DESC'
+      return
+    }
 
-const getSortLabel = (field: SortField) => {
-  if (sortField.value !== field || !sortOrder.value) {
-    return '未排序'
-  }
-  return sortOrder.value === 'ASC' ? '升序' : '降序'
-}
+    if (sortOrder.value === 'DESC') {
+      sortField.value = ''
+      sortOrder.value = ''
+      return
+    }
 
-// 只允许一个排序字段生效：点击新字段时会清空其他字段排序。
-const toggleSort = (field: SortField) => {
-  if (sortField.value !== field) {
-    sortField.value = field
     sortOrder.value = 'ASC'
-    return
   }
 
-  if (sortOrder.value === 'ASC') {
-    sortOrder.value = 'DESC'
-    return
-  }
-
-  if (sortOrder.value === 'DESC') {
+  const resetFilters = () => {
+    keyword.value = ''
+    status.value = 'all'
+    categoryId.value = ''
     sortField.value = ''
     sortOrder.value = ''
-    return
+    currentPage.value = 1
   }
 
-  sortOrder.value = 'ASC'
+  return {
+    keyword,
+    status,
+    categoryId,
+    sortField,
+    sortOrder,
+    currentPage,
+    getSortLabel,
+    toggleSort,
+    resetFilters,
+  }
 }
 
-// 查询由按钮触发，避免输入变化时频繁请求后端。
-const handleSearch = () => {
-  currentPage.value = 1
-  void fetchProducts()
+// 分类选项逻辑：加载分类并提供级联配置。
+const useCategoryOptions = () => {
+  const categoryOptions = ref<CategoryCascaderOption[]>([])
+
+  const categoryCascaderProps = {
+    value: 'id',
+    label: 'name',
+    children: 'children',
+    emitPath: false,
+  }
+
+  const fetchCategories = async () => {
+    try {
+      const data = await getCategories()
+      categoryOptions.value = normalizeCategoryOptions(data)
+    } catch (error) {
+      console.error('获取分类列表失败：', error)
+      categoryOptions.value = []
+    }
+  }
+
+  return {
+    categoryOptions,
+    categoryCascaderProps,
+    fetchCategories,
+  }
 }
 
-const handleReset = () => {
-  keyword.value = ''
-  status.value = 'all'
-  categoryId.value = ''
-  sortField.value = ''
-  sortOrder.value = ''
-  currentPage.value = 1
-  void fetchProducts()
+// 商品表格逻辑：列表请求、查询动作、分页。
+const useProductTable = (
+  filters: {
+    keyword: Ref<string>
+    status: Ref<'all' | ProductStatus>
+    categoryId: Ref<string>
+    sortField: Ref<SortField | ''>
+    sortOrder: Ref<SortOrder | ''>
+    currentPage: Ref<number>
+    resetFilters: () => void
+  },
+  size: number,
+) => {
+  const loading = ref(false)
+  const products = ref<ProductRow[]>([])
+  const total = ref(0)
+
+  const hasData = computed(() => products.value.length > 0)
+
+  const fetchProducts = async () => {
+    loading.value = true
+    try {
+      const response = await getProducts({
+        page: filters.currentPage.value,
+        pageSize: size,
+        keyword: filters.keyword.value.trim() || undefined,
+        // 仅传递二级分类 id；未选择分类时不传该参数。
+        categoryId: filters.categoryId.value || undefined,
+        sortBy: filters.sortField.value || undefined,
+        sortOrder: filters.sortOrder.value || undefined,
+        // 后端约定：available 仅接收 1/0，不筛选时不传。
+        available:
+          filters.status.value === 'all' ? undefined : filters.status.value === '上架' ? 1 : 0,
+      })
+      products.value = response.items.map(buildProductRow)
+      total.value = response.counts
+    } catch (error) {
+      console.error('获取商品列表失败：', error)
+      products.value = []
+      total.value = 0
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 查询由按钮触发，避免输入变化时频繁请求后端。
+  const handleSearch = () => {
+    filters.currentPage.value = 1
+    void fetchProducts()
+  }
+
+  const handleReset = () => {
+    filters.resetFilters()
+    void fetchProducts()
+  }
+
+  const handlePageChange = (page: number) => {
+    filters.currentPage.value = page
+    void fetchProducts()
+  }
+
+  return {
+    loading,
+    products,
+    total,
+    hasData,
+    fetchProducts,
+    handleSearch,
+    handleReset,
+    handlePageChange,
+  }
 }
 
-const handlePageChange = (page: number) => {
-  currentPage.value = page
-  void fetchProducts()
+// SKU 编辑逻辑：详情拉取、差异检测、保存回写。
+const useSkuEditor = (products: Ref<ProductRow[]>) => {
+  const editVisible = ref(false)
+  const editLoading = ref(false)
+  const saveLoading = ref(false)
+  const activeProductId = ref('') // 当前正在编辑的商品 id
+  const editableSkus = ref<EditableSkuRow[]>([]) // 弹窗中可编辑 SKU
+  const originalEditableSkus = ref<EditableSkuSnapshotMap>({})
+
+  const isSkuChanged = (sku: EditableSkuRow) => {
+    const original = originalEditableSkus.value[sku.id]
+    // 如果没有快照（理论上不应发生），按“有变更”处理，避免漏提交。
+    if (!original) {
+      return true
+    }
+
+    return (
+      original.available !== sku.available ||
+      original.inventory !== sku.inventory ||
+      original.oldPrice !== sku.oldPrice ||
+      original.price !== sku.price
+    )
+  }
+
+  const handleEdit = async (id: string) => {
+    activeProductId.value = id
+    editableSkus.value = []
+    originalEditableSkus.value = {}
+    editVisible.value = true
+    editLoading.value = true
+
+    try {
+      const skus = await getProductDetail(id)
+      const mappedSkus = skus.map(mapEditableSku)
+      editableSkus.value = mappedSkus
+      // 打开弹窗时保存一份“初始快照”，后续保存前用它做逐字段 diff。
+      originalEditableSkus.value = createSkuSnapshot(mappedSkus)
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '获取商品详情失败')
+    } finally {
+      editLoading.value = false
+    }
+  }
+
+  // 保存策略：只提交发生变更的 SKU，未变更项不发请求。
+  const handleSaveSkus = async () => {
+    if (!activeProductId.value || editableSkus.value.length === 0) {
+      return
+    }
+
+    // 与快照做 diff，筛出本次真正修改过的 SKU。
+    const changedSkus = editableSkus.value.filter(isSkuChanged)
+    if (changedSkus.length === 0) {
+      ElMessage.info('未检测到 SKU 变更')
+      editVisible.value = false
+      return
+    }
+
+    saveLoading.value = true
+    try {
+      // 仅对 changedSkus 调接口，减少无意义请求与后端写入。
+      await Promise.all(
+        changedSkus.map((sku) =>
+          updateSkuProduct({
+            id: sku.id,
+            available: sku.available,
+            inventory: sku.inventory,
+            oldPrice: sku.oldPrice,
+            price: sku.price,
+          }),
+        ),
+      )
+
+      // 同步更新列表中的聚合信息，确保弹层关闭后页面可见最新编辑结果。
+      const target = products.value.find((item) => item.id === activeProductId.value)
+      if (target) {
+        target.stock = editableSkus.value.reduce((sum, sku) => sum + sku.inventory, 0)
+        target.price = Math.min(...editableSkus.value.map((sku) => sku.price)).toFixed(2)
+        target.status = editableSkus.value.some((sku) => sku.available) ? '上架' : '下架'
+        target.available = target.status === '上架'
+      }
+
+      ElMessage.success('SKU 修改成功')
+      // 保存成功后刷新快照，作为下一次编辑的对比基准。
+      originalEditableSkus.value = createSkuSnapshot(editableSkus.value)
+      editVisible.value = false
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '保存 SKU 失败')
+    } finally {
+      saveLoading.value = false
+    }
+  }
+
+  return {
+    editVisible,
+    editLoading,
+    saveLoading,
+    editableSkus,
+    handleEdit,
+    handleSaveSkus,
+  }
 }
+
+const {
+  keyword,
+  status,
+  categoryId,
+  sortField,
+  sortOrder,
+  currentPage,
+  getSortLabel,
+  toggleSort,
+  resetFilters,
+} = useProductFilters()
+
+const { categoryOptions, categoryCascaderProps, fetchCategories } = useCategoryOptions()
+
+const {
+  loading,
+  products,
+  total,
+  hasData,
+  fetchProducts,
+  handleSearch,
+  handleReset,
+  handlePageChange,
+} = useProductTable(
+  {
+    keyword,
+    status,
+    categoryId,
+    sortField,
+    sortOrder,
+    currentPage,
+    resetFilters,
+  },
+  pageSize,
+)
+
+const { editVisible, editLoading, saveLoading, editableSkus, handleEdit, handleSaveSkus } =
+  useSkuEditor(products)
 
 onMounted(() => {
+  // 页面初始化：并行加载分类与商品列表。
   void fetchCategories()
   void fetchProducts()
 })

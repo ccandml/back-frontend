@@ -50,6 +50,7 @@ const handleToggleAllAvailable = (checked: boolean) => {
 const formatSpec = (spec: SkuItem['specs'][number]) => `${spec.name}: ${spec.valueName}`
 
 const handleSave = () => {
+  // 弹窗只负责通知父组件保存；“变更对比 + 提交策略”都在父组件执行。
   emit('save')
 }
 </script>

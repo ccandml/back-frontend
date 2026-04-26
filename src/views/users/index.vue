@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import type { ComputedRef, Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { codeToText, regionData } from 'element-china-area-data'
 
@@ -29,70 +30,20 @@ type CreateUserForm = {
   fullLocation?: string
 }
 
-const loading = ref(false)
-const detailLoading = ref(false)
-const memberStore = useMemberStore()
-const users = ref<UserRow[]>([])
-const pageSize = 8
-const currentPage = ref(1)
-const total = ref(0)
-const keyword = ref('')
-const sortField = ref<SortField | ''>('')
-const sortOrder = ref<SortOrder | ''>('')
-const detailVisible = ref(false)
-const activeUserId = ref<number | null>(null)
-const detailMap = ref<Record<number, AdminUserDetailResult>>({})
-const deletingUserIds = ref<number[]>([])
-const createVisible = ref(false)
-const creating = ref(false)
-const locationCodes = ref<string[]>([])
-
-const createForm = ref<CreateUserForm>({
-  username: '',
-  password: '',
-  roleId: 3,
-  gender: '',
-  birthday: '',
-  avatar: '',
-  profession: '',
-  fullLocation: '',
-})
-
-const createFormRef = ref<{
+type CreateFormRef = {
   validate: () => Promise<boolean>
   resetFields: () => void
-} | null>(null)
-
-const createRules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
-  roleId: [{ required: true, message: '请选择角色', trigger: 'change' }],
 }
 
-const hasData = computed(() => users.value.length > 0)
+// 表格固定分页大小（保持原有行为）。
+const pageSize = 8
+
+const memberStore = useMemberStore()
+
 // 注销用户仅允许超级管理员执行，角色来自 Pinia 持久化会员信息。
 const canDeactivateUser = computed(() => memberStore.role === '超级管理员')
 // 非超级管理员可新增普通用户，但不可新增管理员角色。
 const canCreateAdminUser = computed(() => memberStore.role === '超级管理员')
-const disableCreateSubmit = computed(
-  () => !canCreateAdminUser.value && createForm.value.roleId === 2,
-)
-
-const activeUser = computed(() => {
-  if (activeUserId.value === null) {
-    return null
-  }
-
-  return users.value.find((item) => item.id === activeUserId.value) ?? null
-})
-
-const activeUserDetail = computed(() => {
-  if (activeUserId.value === null) {
-    return null
-  }
-
-  return detailMap.value[activeUserId.value] ?? null
-})
 
 const normalizeGender = (value: string): GenderLabel => {
   if (value === '男' || value === '女') {
@@ -114,214 +65,408 @@ const getRoleTagType = (role: string): RoleTagType => {
 
 const formatCurrency = (value: number) => `¥${value.toFixed(2)}`
 
-const getSortLabel = (field: SortField) => {
-  if (sortField.value !== field || !sortOrder.value) {
-    return '未排序'
-  }
-  return sortOrder.value === 'ASC' ? '升序' : '降序'
-}
+// 筛选与排序逻辑：关键词、排序、页码。
+const useUserFilters = () => {
+  const keyword = ref('') // 支持用户名/用户ID搜索
+  const sortField = ref<SortField | ''>('') // 当前排序字段
+  const sortOrder = ref<SortOrder | ''>('') // 当前排序方向
+  const currentPage = ref(1) // 当前页
 
-// 仅允许单字段排序，点击同一字段按升序/降序/取消循环。
-const toggleSort = (field: SortField) => {
-  if (sortField.value !== field) {
-    sortField.value = field
+  const getSortLabel = (field: SortField) => {
+    if (sortField.value !== field || !sortOrder.value) {
+      return '未排序'
+    }
+    return sortOrder.value === 'ASC' ? '升序' : '降序'
+  }
+
+  // 仅允许单字段排序，点击同一字段按升序/降序/取消循环。
+  const toggleSort = (field: SortField) => {
+    if (sortField.value !== field) {
+      sortField.value = field
+      sortOrder.value = 'ASC'
+      return
+    }
+
+    if (sortOrder.value === 'ASC') {
+      sortOrder.value = 'DESC'
+      return
+    }
+
+    if (sortOrder.value === 'DESC') {
+      sortField.value = ''
+      sortOrder.value = ''
+      return
+    }
+
     sortOrder.value = 'ASC'
-    return
   }
 
-  if (sortOrder.value === 'ASC') {
-    sortOrder.value = 'DESC'
-    return
-  }
-
-  if (sortOrder.value === 'DESC') {
+  const resetFilters = () => {
+    keyword.value = ''
     sortField.value = ''
     sortOrder.value = ''
-    return
-  }
-
-  sortOrder.value = 'ASC'
-}
-
-const fetchUsers = async () => {
-  loading.value = true
-  try {
-    const response = await getUsersList({
-      page: currentPage.value,
-      pageSize,
-      keyword: keyword.value.trim() || undefined,
-      sortBy: sortField.value || undefined,
-      sortOrder: sortOrder.value || undefined,
-    })
-
-    users.value = response.items.map((item) => ({
-      ...item,
-      genderLabel: normalizeGender(item.gender),
-    }))
-    total.value = response.counts
-  } catch (error) {
-    console.error('获取用户列表失败：', error)
-    ElMessage.error(error instanceof Error ? error.message : '获取用户列表失败')
-    users.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
-}
-
-const fetchUserDetail = async (id: number) => {
-  detailLoading.value = true
-  try {
-    const detail = await getUserDetail(String(id))
-    detailMap.value[id] = detail
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '获取用户详情失败')
-    detailVisible.value = false
-  } finally {
-    detailLoading.value = false
-  }
-}
-
-// 查询由按钮触发，避免输入过程频繁请求。
-const handleSearch = () => {
-  currentPage.value = 1
-  void fetchUsers()
-}
-
-const handleReset = () => {
-  keyword.value = ''
-  sortField.value = ''
-  sortOrder.value = ''
-  currentPage.value = 1
-  void fetchUsers()
-}
-
-const handlePageChange = (page: number) => {
-  currentPage.value = page
-  void fetchUsers()
-}
-
-const handleViewDetail = (row: UserRow) => {
-  activeUserId.value = row.id
-  detailVisible.value = true
-
-  if (detailMap.value[row.id]) {
-    return
-  }
-
-  void fetchUserDetail(row.id)
-}
-
-const handleDeactivate = async (row: UserRow) => {
-  if (!canDeactivateUser.value) {
-    ElMessage.warning('仅超级管理员可注销用户')
-    return
-  }
-
-  if (deletingUserIds.value.includes(row.id)) {
-    return
-  }
-
-  try {
-    await ElMessageBox.confirm(
-      `确认注销用户 ${row.username}（${row.id}）吗？注销后不可恢复。`,
-      '注销确认',
-      {
-        confirmButtonText: '确认注销',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    )
-  } catch {
-    return
-  }
-
-  deletingUserIds.value = [...deletingUserIds.value, row.id]
-  try {
-    await deleteUser(String(row.id))
-
-    // 注销成功后直接移除当前行，避免出现“已注销”的过渡状态。
-    users.value = users.value.filter((item) => item.id !== row.id)
-    total.value = Math.max(0, total.value - 1)
-
-    if (activeUserId.value === row.id) {
-      activeUserId.value = null
-      detailVisible.value = false
-    }
-
-    // 当前页删空且仍有数据时回退一页补齐列表。
-    if (users.value.length === 0 && total.value > 0 && currentPage.value > 1) {
-      currentPage.value -= 1
-      await fetchUsers()
-    }
-
-    ElMessage.success('用户注销成功')
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '用户注销失败')
-  } finally {
-    deletingUserIds.value = deletingUserIds.value.filter((id) => id !== row.id)
-  }
-}
-
-const openCreateDialog = () => {
-  createVisible.value = true
-}
-
-const closeCreateDialog = () => {
-  createVisible.value = false
-  createFormRef.value?.resetFields()
-  locationCodes.value = []
-}
-
-// Cascader 返回行政区编码数组，提交前转换为“省市区”纯文本。
-const handleLocationChange = (codes: string[]) => {
-  locationCodes.value = codes
-  createForm.value.fullLocation = codes
-    .map((code) => codeToText[code as keyof typeof codeToText])
-    .filter(Boolean)
-    .join('')
-}
-
-const handleCreateUser = async () => {
-  if (!canCreateAdminUser.value && createForm.value.roleId === 2) {
-    ElMessage.warning('仅超级管理员可新增管理员')
-    return
-  }
-
-  if (!createFormRef.value) {
-    return
-  }
-
-  try {
-    await createFormRef.value.validate()
-  } catch {
-    return
-  }
-
-  creating.value = true
-  try {
-    await createUser({
-      username: createForm.value.username.trim(),
-      password: createForm.value.password,
-      roleId: createForm.value.roleId,
-      gender: createForm.value.gender || undefined,
-      birthday: createForm.value.birthday || undefined,
-      avatar: createForm.value.avatar || undefined,
-      profession: createForm.value.profession || undefined,
-      fullLocation: createForm.value.fullLocation || undefined,
-    })
-    ElMessage.success('新增用户成功')
-    closeCreateDialog()
     currentPage.value = 1
-    await fetchUsers()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '新增用户失败')
-  } finally {
-    creating.value = false
+  }
+
+  return {
+    keyword,
+    sortField,
+    sortOrder,
+    currentPage,
+    getSortLabel,
+    toggleSort,
+    resetFilters,
   }
 }
+
+// 用户列表逻辑：列表请求、筛选触发、分页。
+const useUserTable = (
+  filters: {
+    keyword: Ref<string>
+    sortField: Ref<SortField | ''>
+    sortOrder: Ref<SortOrder | ''>
+    currentPage: Ref<number>
+    resetFilters: () => void
+  },
+  size: number,
+) => {
+  const loading = ref(false)
+  const users = ref<UserRow[]>([])
+  const total = ref(0)
+
+  const hasData = computed(() => users.value.length > 0)
+
+  const fetchUsers = async () => {
+    loading.value = true
+    try {
+      const response = await getUsersList({
+        page: filters.currentPage.value,
+        pageSize: size,
+        keyword: filters.keyword.value.trim() || undefined,
+        sortBy: filters.sortField.value || undefined,
+        sortOrder: filters.sortOrder.value || undefined,
+      })
+
+      users.value = response.items.map((item) => ({
+        ...item,
+        genderLabel: normalizeGender(item.gender),
+      }))
+      total.value = response.counts
+    } catch (error) {
+      console.error('获取用户列表失败：', error)
+      ElMessage.error(error instanceof Error ? error.message : '获取用户列表失败')
+      users.value = []
+      total.value = 0
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 查询由按钮触发，避免输入过程频繁请求。
+  const handleSearch = () => {
+    filters.currentPage.value = 1
+    void fetchUsers()
+  }
+
+  const handleReset = () => {
+    filters.resetFilters()
+    void fetchUsers()
+  }
+
+  const handlePageChange = (page: number) => {
+    filters.currentPage.value = page
+    void fetchUsers()
+  }
+
+  return {
+    loading,
+    users,
+    total,
+    hasData,
+    fetchUsers,
+    handleSearch,
+    handleReset,
+    handlePageChange,
+  }
+}
+
+// 详情与注销逻辑：详情懒加载缓存、注销确认与列表回写。
+const useUserDetail = (params: {
+  users: Ref<UserRow[]>
+  total: Ref<number>
+  currentPage: Ref<number>
+  fetchUsers: () => Promise<void>
+  canDeactivateUser: ComputedRef<boolean>
+}) => {
+  const detailLoading = ref(false)
+  const detailVisible = ref(false)
+  const activeUserId = ref<number | null>(null)
+  const detailMap = ref<Record<number, AdminUserDetailResult>>({})
+  const deletingUserIds = ref<number[]>([])
+
+  const activeUser = computed(() => {
+    if (activeUserId.value === null) {
+      return null
+    }
+
+    return params.users.value.find((item) => item.id === activeUserId.value) ?? null
+  })
+
+  const activeUserDetail = computed(() => {
+    if (activeUserId.value === null) {
+      return null
+    }
+
+    return detailMap.value[activeUserId.value] ?? null
+  })
+
+  const fetchUserDetail = async (id: number) => {
+    detailLoading.value = true
+    try {
+      const detail = await getUserDetail(String(id))
+      detailMap.value[id] = detail
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '获取用户详情失败')
+      detailVisible.value = false
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
+  const handleViewDetail = (row: UserRow) => {
+    activeUserId.value = row.id
+    detailVisible.value = true
+
+    if (detailMap.value[row.id]) {
+      return
+    }
+
+    void fetchUserDetail(row.id)
+  }
+
+  const handleDeactivate = async (row: UserRow) => {
+    if (!params.canDeactivateUser.value) {
+      ElMessage.warning('仅超级管理员可注销用户')
+      return
+    }
+
+    if (deletingUserIds.value.includes(row.id)) {
+      return
+    }
+
+    try {
+      await ElMessageBox.confirm(
+        `确认注销用户 ${row.username}（${row.id}）吗？注销后不可恢复。`,
+        '注销确认',
+        {
+          confirmButtonText: '确认注销',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+    } catch {
+      return
+    }
+
+    deletingUserIds.value = [...deletingUserIds.value, row.id]
+    try {
+      await deleteUser(String(row.id))
+
+      // 注销成功后直接移除当前行，避免出现“已注销”的过渡状态。
+      params.users.value = params.users.value.filter((item) => item.id !== row.id)
+      params.total.value = Math.max(0, params.total.value - 1)
+
+      if (activeUserId.value === row.id) {
+        activeUserId.value = null
+        detailVisible.value = false
+      }
+
+      // 当前页删空且仍有数据时回退一页补齐列表。
+      if (
+        params.users.value.length === 0 &&
+        params.total.value > 0 &&
+        params.currentPage.value > 1
+      ) {
+        params.currentPage.value -= 1
+        await params.fetchUsers()
+      }
+
+      ElMessage.success('用户注销成功')
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '用户注销失败')
+    } finally {
+      deletingUserIds.value = deletingUserIds.value.filter((id) => id !== row.id)
+    }
+  }
+
+  return {
+    detailLoading,
+    detailVisible,
+    deletingUserIds,
+    activeUser,
+    activeUserDetail,
+    handleViewDetail,
+    handleDeactivate,
+  }
+}
+
+// 创建用户逻辑：弹窗状态、表单校验、地区转换、提交。
+const useCreateUser = (params: {
+  canCreateAdminUser: ComputedRef<boolean>
+  currentPage: Ref<number>
+  fetchUsers: () => Promise<void>
+}) => {
+  const createVisible = ref(false)
+  const creating = ref(false)
+  const locationCodes = ref<string[]>([])
+
+  const createForm = ref<CreateUserForm>({
+    username: '',
+    password: '',
+    roleId: 3,
+    gender: '',
+    birthday: '',
+    avatar: '',
+    profession: '',
+    fullLocation: '',
+  })
+
+  const createFormRef = ref<CreateFormRef | null>(null)
+
+  const createRules = {
+    username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+    password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+    roleId: [{ required: true, message: '请选择角色', trigger: 'change' }],
+  }
+
+  const disableCreateSubmit = computed(
+    () => !params.canCreateAdminUser.value && createForm.value.roleId === 2,
+  )
+
+  const openCreateDialog = () => {
+    createVisible.value = true
+  }
+
+  const closeCreateDialog = () => {
+    createVisible.value = false
+    createFormRef.value?.resetFields()
+    locationCodes.value = []
+  }
+
+  // Cascader 返回行政区编码数组，提交前转换为“省市区”纯文本。
+  const handleLocationChange = (codes: string[]) => {
+    locationCodes.value = codes
+    createForm.value.fullLocation = codes
+      .map((code) => codeToText[code as keyof typeof codeToText])
+      .filter(Boolean)
+      .join('')
+  }
+
+  const handleCreateUser = async () => {
+    if (!params.canCreateAdminUser.value && createForm.value.roleId === 2) {
+      ElMessage.warning('仅超级管理员可新增管理员')
+      return
+    }
+
+    if (!createFormRef.value) {
+      return
+    }
+
+    try {
+      await createFormRef.value.validate()
+    } catch {
+      return
+    }
+
+    creating.value = true
+    try {
+      await createUser({
+        username: createForm.value.username.trim(),
+        password: createForm.value.password,
+        roleId: createForm.value.roleId,
+        gender: createForm.value.gender || undefined,
+        birthday: createForm.value.birthday || undefined,
+        avatar: createForm.value.avatar || undefined,
+        profession: createForm.value.profession || undefined,
+        fullLocation: createForm.value.fullLocation || undefined,
+      })
+      ElMessage.success('新增用户成功')
+      closeCreateDialog()
+      params.currentPage.value = 1
+      await params.fetchUsers()
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '新增用户失败')
+    } finally {
+      creating.value = false
+    }
+  }
+
+  return {
+    createVisible,
+    creating,
+    locationCodes,
+    createForm,
+    createFormRef,
+    createRules,
+    disableCreateSubmit,
+    openCreateDialog,
+    closeCreateDialog,
+    handleLocationChange,
+    handleCreateUser,
+  }
+}
+
+const { keyword, sortField, sortOrder, currentPage, getSortLabel, toggleSort, resetFilters } =
+  useUserFilters()
+
+const { loading, users, total, hasData, fetchUsers, handleSearch, handleReset, handlePageChange } =
+  useUserTable(
+    {
+      keyword,
+      sortField,
+      sortOrder,
+      currentPage,
+      resetFilters,
+    },
+    pageSize,
+  )
+
+const {
+  detailVisible,
+  detailLoading,
+  deletingUserIds,
+  activeUser,
+  activeUserDetail,
+  handleViewDetail,
+  handleDeactivate,
+} = useUserDetail({
+  users,
+  total,
+  currentPage,
+  fetchUsers,
+  canDeactivateUser,
+})
+
+const {
+  createVisible,
+  creating,
+  locationCodes,
+  createForm,
+  createFormRef,
+  createRules,
+  disableCreateSubmit,
+  openCreateDialog,
+  closeCreateDialog,
+  handleLocationChange,
+  handleCreateUser,
+} = useCreateUser({
+  canCreateAdminUser,
+  currentPage,
+  fetchUsers,
+})
 
 onMounted(() => {
+  // 页面初始化加载用户列表。
   void fetchUsers()
 })
 </script>

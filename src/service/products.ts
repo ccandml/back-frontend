@@ -29,13 +29,16 @@ export const getProductDetail = async (id: string) => {
 }
 
 // 修改商品详情
-export const updateSkuProduct = async (data: {
+export type UpdateSkuPayload = {
   id: string
-  available: boolean
-  inventory: number
-  oldPrice: number
-  price: number
-}) => {
+  available?: boolean
+  inventory?: number
+  oldPrice?: number
+  price?: number
+}
+
+// 批量更新 SKU：后端接收数组，单项仅包含变更字段。
+export const updateSkuProduct = async (data: UpdateSkuPayload[]) => {
   return requestWithConfig({
     url: `/admin-products/sku`,
     method: 'PATCH',

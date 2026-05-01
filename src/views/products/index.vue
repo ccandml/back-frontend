@@ -4,7 +4,12 @@ import type { Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { getCategories } from '@/service/category'
-import { getProductDetail, getProducts, updateSkuProduct } from '@/service/products'
+import {
+  getProductDetail,
+  getProducts,
+  updateSkuProduct,
+  type UpdateSkuPayload,
+} from '@/service/products'
 import type { GoodsItems } from '@/types/global'
 import SkuEditDialog from '@/views/products/components/SkuEditDialog.vue'
 import type { ClassifyResult } from '@/views/products/types/category'
@@ -282,6 +287,35 @@ const useSkuEditor = (products: Ref<ProductRow[]>) => {
     )
   }
 
+  // 仅保留变更字段，减少无效写入。
+  const buildSkuUpdatePayload = (sku: EditableSkuRow): UpdateSkuPayload => {
+    const original = originalEditableSkus.value[sku.id]
+    if (!original) {
+      return {
+        id: sku.id,
+        available: sku.available,
+        inventory: sku.inventory,
+        oldPrice: sku.oldPrice,
+        price: sku.price,
+      }
+    }
+
+    const payload: UpdateSkuPayload = { id: sku.id }
+    if (original.available !== sku.available) {
+      payload.available = sku.available
+    }
+    if (original.inventory !== sku.inventory) {
+      payload.inventory = sku.inventory
+    }
+    if (original.oldPrice !== sku.oldPrice) {
+      payload.oldPrice = sku.oldPrice
+    }
+    if (original.price !== sku.price) {
+      payload.price = sku.price
+    }
+    return payload
+  }
+
   const handleEdit = async (id: string) => {
     activeProductId.value = id
     editableSkus.value = []
@@ -310,7 +344,10 @@ const useSkuEditor = (products: Ref<ProductRow[]>) => {
 
     // 与快照做 diff，筛出本次真正修改过的 SKU。
     const changedSkus = editableSkus.value.filter(isSkuChanged)
-    if (changedSkus.length === 0) {
+    const updatePayloads = changedSkus
+      .map(buildSkuUpdatePayload)
+      .filter((payload) => Object.keys(payload).length > 1)
+    if (updatePayloads.length === 0) {
       ElMessage.info('未检测到 SKU 变更')
       editVisible.value = false
       return
@@ -318,18 +355,8 @@ const useSkuEditor = (products: Ref<ProductRow[]>) => {
 
     saveLoading.value = true
     try {
-      // 仅对 changedSkus 调接口，减少无意义请求与后端写入。
-      await Promise.all(
-        changedSkus.map((sku) =>
-          updateSkuProduct({
-            id: sku.id,
-            available: sku.available,
-            inventory: sku.inventory,
-            oldPrice: sku.oldPrice,
-            price: sku.price,
-          }),
-        ),
-      )
+      // 批量提交变化字段，减少无意义请求与后端写入。
+      await updateSkuProduct(updatePayloads)
 
       // 同步更新列表中的聚合信息，确保弹层关闭后页面可见最新编辑结果。
       const target = products.value.find((item) => item.id === activeProductId.value)
